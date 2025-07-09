@@ -86,11 +86,14 @@ def back_to_menu_kb():
 
 @dp.message(F.text.startswith("/start"))
 async def cmd_start(msg: Message, state: FSMContext):
-    if not await is_subscribed(bot, msg.from_user.id):
+    user_id = msg.from_user.id
+    subscribed = await is_subscribed(bot, user_id)
+    print(f"[DEBUG] Пользователь {user_id} подписан? {subscribed}")  # Лог в консоль
+
+    if not subscribed:
         await msg.answer("🔒 Чтобы пользоваться ботом, подпишитесь на канал:\nhttps://t.me/grifci")
         return
 
-    user_id = msg.from_user.id
     ensure_user_in_db(user_id)
 
     ref_id = None
@@ -114,8 +117,8 @@ async def cmd_start(msg: Message, state: FSMContext):
     else:
         await msg.answer("👋 Привет! Этот бот создан для взаимных подписок. Подписывайся на каналы, зарабатывай токены и размещай свои!")
 
-    # Показываем меню, НЕ отправляем новое сообщение, а редактируем, если возможно
     await main_menu(msg)
+
 
 async def main_menu(msg_or_cb):
     # msg_or_cb может быть Message или CallbackQuery
