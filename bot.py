@@ -1,30 +1,23 @@
 import asyncio
 import sqlite3
-from aiogram import types
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery
+from aiogram import types, Bot, Dispatcher, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatMemberStatus
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 import logging
 
+API_TOKEN = '7692188396:AAFQcjzCqFHITJrNyPNOng9_RtfpysdWZlw'
 REQUIRED_CHANNEL = "@grifci"
 
-async def is_subscribed(bot: Bot, user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
-        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-    except Exception:
-        return False
-
-API_TOKEN = '7692188396:AAFQcjzCqFHITJrNyPNOng9_RtfpysdWZlw'
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# --- Создание таблиц ---
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -54,109 +47,156 @@ CREATE TABLE IF NOT EXISTS actions (
 )''')
 conn.commit()
 
-# --- Новая функция добавления пользователя в базу, если его нет ---
-def ensure_user_in_db(user_id: int):
-    cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-    if cursor.fetchone() is None:
-        cursor.execute("INSERT INTO users (user_id, tokens, join_date) VALUES (?, ?, ?)",
-                       (user_id, 0, datetime.now()))
-        conn.commit()
 
+# --- FSM для добавления канала ---
 class AddChannel(StatesGroup):
     url = State()
     target = State()
     cost = State()
 
-# --- Главное меню и кнопка "вернуться в меню" ---
-def main_menu_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
+
+# --- Проверка подписки на обязательный канал ---
+async def is_subscribed(bot: Bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+    except Exception:
+        return False
+
+
+# --- Автоматическое добавление пользователя в базу ---
+async def ensure_user_in_db(user_id: int, referral_id: int = None):
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    if cursor.fetchone() is None:
+        cursor.execute(
+            "INSERT INTO users (user_id, tokens, join_date, referral_id) VALUES (?, ?, ?, ?)",
+            (user_id, 0, datetime.now().isoformat(), referral_id)
+        )
+        conn.commit()
+
+
+# --- Главное меню (редактируем сообщение, если возможно) ---
+async def main_menu(target):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📥 Заработать токены", callback_data="earn")],
         [InlineKeyboardButton(text="📢 Разместить канал", callback_data="place")],
         [InlineKeyboardButton(text="💰 Мои токены", callback_data="balance")],
         [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="ref")],
-        [InlineKeyboardButton(text="🪙 Ежедневный бонус", callback_data="bonus")]
+        [InlineKeyboardButton(text="🪙 Ежедневный бонус", callback_data="bonus")],
+        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")]
     ])
+    text = "Выберите действие:"
+    if isinstance(target, Message):
+        await target.answer(text, reply_markup=kb)
+    elif isinstance(target, CallbackQuery):
+        try:
+            await target.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            await target.message.answer(text, reply_markup=kb)
 
-def back_to_menu_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
-    ])
 
-# --- Обработчики ---
-
+# --- /start с кнопкой проверки подписки ---
 @dp.message(F.text.startswith("/start"))
 async def cmd_start(msg: Message, state: FSMContext):
     user_id = msg.from_user.id
+
     subscribed = await is_subscribed(bot, user_id)
-    print(f"[DEBUG] Пользователь {user_id} подписан? {subscribed}")  # Лог в консоль
 
-    if not subscribed:
-        await msg.answer("🔒 Чтобы пользоваться ботом, подпишитесь на канал:\nhttps://t.me/grifci")
-        return
-
-    ensure_user_in_db(user_id)
-
-    ref_id = None
-    if "?ref=" in msg.text:
-        try:
-            ref_id = int(msg.text.split("?ref=")[1])
-        except:
-            pass
-
-    cursor.execute("SELECT referral_id FROM users WHERE user_id = ?", (user_id,))
-    current_ref = cursor.fetchone()[0]
-    if current_ref is None and ref_id is not None and ref_id != user_id:
-        cursor.execute("UPDATE users SET referral_id = ? WHERE user_id = ?", (ref_id, user_id))
-        cursor.execute("UPDATE users SET tokens = tokens + 3 WHERE user_id = ?", (ref_id,))
-        try:
-            await bot.send_message(ref_id, f"🎉 По вашей ссылке зашёл пользователь @{msg.from_user.username or user_id}!")
-        except:
-            pass
-        conn.commit()
-        await msg.answer(f"👋 Вас пригласил пользователь ID {ref_id}!\n\n🤖 Этот бот создан для взаимных подписок. Зарабатывайте токены, подписываясь на каналы, и продвигайте свои! 💥")
+    if subscribed:
+        await ensure_user_in_db(user_id)
+        await msg.answer("👋 Добро пожаловать! Вы уже подписаны на канал.")
+        await main_menu(msg)
     else:
-        await msg.answer("👋 Привет! Этот бот создан для взаимных подписок. Подписывайся на каналы, зарабатывай токены и размещай свои!")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscribe")]
+        ])
+        await msg.answer(
+            f"🔒 Чтобы пользоваться ботом, подпишитесь на канал:\nhttps://t.me/{REQUIRED_CHANNEL.lstrip('@')}\n\n"
+            "После подписки нажмите кнопку ниже.",
+            reply_markup=kb
+        )
 
-    await main_menu(msg)
+
+@dp.callback_query(F.data == "check_subscribe")
+async def check_subscription(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    subscribed = await is_subscribed(bot, user_id)
+    if subscribed:
+        await ensure_user_in_db(user_id)
+        await cb.message.edit_text("Спасибо за подписку! Добро пожаловать!")
+        await main_menu(cb)
+    else:
+        await cb.answer("❌ Вы еще не подписались на канал, пожалуйста, подпишитесь.", show_alert=True)
 
 
-async def main_menu(msg_or_cb):
-    # msg_or_cb может быть Message или CallbackQuery
-    kb = main_menu_kb()
-    text = "Выберите действие:"
+# --- Команда /help и кнопка "Помощь" ---
+HELP_TEXT = """
+📌 **Инструкция по добавлению вашего Telegram-канала в бота взаимных подписок**
 
-    if isinstance(msg_or_cb, Message):
-        await msg_or_cb.answer(text, reply_markup=kb)
-    elif isinstance(msg_or_cb, CallbackQuery):
-        await msg_or_cb.message.edit_text(text, reply_markup=kb)
-        await msg_or_cb.answer()
+1. Подпишитесь на обязательный канал бота: https://t.me/grifci
 
-# Обработка кнопки меню (возврат в меню)
+2. Добавьте бота в свой канал и назначьте его администратором.
+
+3. Убедитесь, что бот имеет права для проверки подписчиков.
+
+4. В боте выберите "📢 Разместить канал", укажите ссылку на канал, количество подписчиков и токены.
+
+5. Дождитесь, когда пользователи начнут подписываться на ваш канал.
+
+⚠️ Внимание:
+- Добавляйте бота только в каналы, которыми управляете.
+- Не удаляйте бота из канала.
+- Пользователи должны подтверждать подписку через бота.
+- За отписки могут быть штрафы токенами.
+"""
+
+@dp.message(F.text == "/help")
+async def cmd_help(msg: Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await msg.answer(HELP_TEXT, reply_markup=kb)
+
+@dp.callback_query(F.data == "help")
+async def help_callback(cb: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await cb.message.edit_text(HELP_TEXT, reply_markup=kb)
+
+
+# --- Вернуться в меню ---
 @dp.callback_query(F.data == "menu")
 async def back_to_menu(cb: CallbackQuery):
-    ensure_user_in_db(cb.from_user.id)
     await main_menu(cb)
 
-# Остальные обработчики — вызываем ensure_user_in_db и заменяем send -> edit_message_text там, где нужно
 
+# --- Баланс токенов ---
 @dp.callback_query(F.data == "balance")
 async def balance(cb: CallbackQuery):
-    ensure_user_in_db(cb.from_user.id)
-    cursor.execute("SELECT tokens FROM users WHERE user_id = ?", (cb.from_user.id,))
-    tokens = cursor.fetchone()[0]
-    await cb.message.edit_text(f"💰 У тебя {tokens} токенов.", reply_markup=back_to_menu_kb())
+    user_id = cb.from_user.id
+    cursor.execute("SELECT tokens FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    tokens = row[0] if row else 0
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await cb.message.edit_text(f"💰 У тебя {tokens} токенов.", reply_markup=kb)
     await cb.answer()
 
+
+# --- Добавление канала ---
 @dp.callback_query(F.data == "place")
 async def place_channel(cb: CallbackQuery, state: FSMContext):
-    ensure_user_in_db(cb.from_user.id)
-    await cb.message.edit_text("🔗 Введите ссылку на канал:", reply_markup=back_to_menu_kb())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await cb.message.edit_text("🔗 Введите ссылку на канал:", reply_markup=kb)
     await state.set_state(AddChannel.url)
     await cb.answer()
 
 @dp.message(AddChannel.url)
 async def add_url(msg: Message, state: FSMContext):
-    ensure_user_in_db(msg.from_user.id)
     url = msg.text
     if not url.startswith("https://t.me/"):
         await msg.answer("❌ Укажите корректную ссылку на Telegram-канал.")
@@ -165,32 +205,52 @@ async def add_url(msg: Message, state: FSMContext):
     username = url.split("https://t.me/")[-1]
     try:
         member = await bot.get_chat_member(chat_id=f"@{username}", user_id=msg.from_user.id)
-    except:
+    except Exception:
         await msg.answer("❌ Бот должен быть добавлен в канал и назначен администратором!")
         return
 
     await state.update_data(url=url)
-    await msg.answer("👥 Сколько подписчиков хотите?")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await msg.answer("👥 Сколько подписчиков хотите?", reply_markup=kb)
     await state.set_state(AddChannel.target)
 
 @dp.message(AddChannel.target)
 async def add_target(msg: Message, state: FSMContext):
-    ensure_user_in_db(msg.from_user.id)
-    await state.update_data(target=int(msg.text))
-    await msg.answer("💰 Сколько токенов вы готовы потратить? (1 подписчик = 1 токен)")
+    try:
+        target = int(msg.text)
+        if target <= 0:
+            raise ValueError
+    except:
+        await msg.answer("❌ Введите корректное число подписчиков.")
+        return
+
+    await state.update_data(target=target)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await msg.answer("💰 Сколько токенов вы готовы потратить? (1 подписчик = 1 токен)", reply_markup=kb)
     await state.set_state(AddChannel.cost)
 
 @dp.message(AddChannel.cost)
 async def add_cost(msg: Message, state: FSMContext):
-    ensure_user_in_db(msg.from_user.id)
+    try:
+        cost = int(msg.text)
+        if cost <= 0:
+            raise ValueError
+    except:
+        await msg.answer("❌ Введите корректное количество токенов.")
+        return
+
     data = await state.get_data()
-    url = data["url"]
-    target = data["target"]
-    cost = int(msg.text)
+    url = data.get("url")
+    target = data.get("target")
     user_id = msg.from_user.id
 
     cursor.execute("SELECT tokens FROM users WHERE user_id = ?", (user_id,))
-    tokens = cursor.fetchone()[0]
+    row = cursor.fetchone()
+    tokens = row[0] if row else 0
     if tokens < cost:
         await msg.answer("❌ У вас недостаточно токенов.")
         return
@@ -203,56 +263,69 @@ async def add_cost(msg: Message, state: FSMContext):
     await msg.answer("✅ Канал добавлен в очередь. Пользователи начнут подписываться скоро.")
     await state.clear()
 
+
+# --- Ежедневный бонус ---
 @dp.callback_query(F.data == "bonus")
 async def daily_bonus(cb: CallbackQuery):
-    ensure_user_in_db(cb.from_user.id)
     user_id = cb.from_user.id
     now = datetime.now()
 
     cursor.execute("SELECT last_bonus FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
 
-    if row is None:
+    if row is None or row[0] is None:
         cursor.execute(
-            "INSERT INTO users (user_id, tokens, last_bonus) VALUES (?, ?, ?)",
-            (user_id, 1, now.isoformat())
+            "UPDATE users SET tokens = tokens + 1, last_bonus = ? WHERE user_id = ?",
+            (now.isoformat(), user_id)
         )
+        if cursor.rowcount == 0:
+            # Если пользователя нет, создаём с 1 токеном
+            cursor.execute(
+                "INSERT INTO users (user_id, tokens, last_bonus) VALUES (?, ?, ?)",
+                (user_id, 1, now.isoformat())
+            )
         conn.commit()
-        await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!", reply_markup=back_to_menu_kb())
+        await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!")
         await cb.answer()
         return
 
-    if row[0] is not None:
-        last_time = datetime.fromisoformat(row[0])
-        if now - last_time < timedelta(hours=24):
-            await cb.message.edit_text("❌ Бонус уже получен. Возвращайся позже!", reply_markup=back_to_menu_kb())
-            await cb.answer()
-            return
+    last_time = datetime.fromisoformat(row[0])
+    if now - last_time < timedelta(hours=24):
+        await cb.answer("❌ Бонус уже получен. Возвращайся позже!", show_alert=True)
+        return
 
     cursor.execute(
-        "UPDATE users SET tokens = tokens + 1, last_bonus = ? WHERE user_id = ?", 
+        "UPDATE users SET tokens = tokens + 1, last_bonus = ? WHERE user_id = ?",
         (now.isoformat(), user_id)
     )
     conn.commit()
-    await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!", reply_markup=back_to_menu_kb())
+    await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!")
     await cb.answer()
 
+
+# --- Реферальная ссылка ---
 @dp.callback_query(F.data == "ref")
 async def send_ref(cb: CallbackQuery):
-    ensure_user_in_db(cb.from_user.id)
-    ref_link = f"https://t.me/{(await bot.get_me()).username}?start=ref={cb.from_user.id}"
-    await cb.message.edit_text(f"🔗 Твоя реферальная ссылка:\n{ref_link}", reply_markup=back_to_menu_kb())
+    me = await bot.get_me()
+    ref_link = f"https://t.me/{me.username}?start=ref={cb.from_user.id}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await cb.message.edit_text(f"🔗 Твоя реферальная ссылка:\n{ref_link}", reply_markup=kb)
     await cb.answer()
 
+
+# --- Заработать токены (взаимные подписки) ---
 @dp.callback_query(F.data == "earn")
 async def earn_tokens(cb: CallbackQuery):
-    ensure_user_in_db(cb.from_user.id)
     user_id = cb.from_user.id
-    cursor.execute("SELECT * FROM users WHERE user_id = ? AND ban_until IS NOT NULL AND ban_until > ?", (user_id, datetime.now()))
-    if cursor.fetchone():
-        await cb.message.edit_text("🚫 Вы в бане за отписку. Попробуйте позже.", reply_markup=back_to_menu_kb())
-        await cb.answer()
-        return
+    cursor.execute("SELECT ban_until FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row and row[0] is not None:
+        ban_until = datetime.fromisoformat(row[0])
+        if ban_until > datetime.now():
+            await cb.answer("🚫 Вы в бане за отписку. Попробуйте позже.", show_alert=True)
+            return
 
     cursor.execute('''
         SELECT * FROM channels
@@ -261,15 +334,13 @@ async def earn_tokens(cb: CallbackQuery):
     ''')
     row = cursor.fetchone()
     if row is None:
-        await cb.message.edit_text("😔 Нет доступных каналов. Попробуйте позже.", reply_markup=back_to_menu_kb())
-        await cb.answer()
+        await cb.answer("😔 Нет доступных каналов. Попробуйте позже.", show_alert=True)
         return
 
     channel_id, owner_id, url, target, current, cost, active = row
     cursor.execute("SELECT * FROM actions WHERE user_id = ? AND channel_id = ?", (user_id, channel_id))
     if cursor.fetchone():
-        await cb.message.edit_text("🔄 Ты уже выполнял это задание. Подожди новые каналы.", reply_markup=back_to_menu_kb())
-        await cb.answer()
+        await cb.answer("🔄 Ты уже выполнял это задание. Подожди новые каналы.", show_alert=True)
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -279,46 +350,49 @@ async def earn_tokens(cb: CallbackQuery):
     await cb.message.edit_text(f"📢 Подпишись на канал: {url}\n\nНажми 'Я подписался' после этого.", reply_markup=kb)
     await cb.answer()
 
+
+# --- Проверка подписки ---
 @dp.callback_query(F.data.startswith("verify_"))
 async def verify_subscription(cb: CallbackQuery):
-    ensure_user_in_db(cb.from_user.id)
     user_id = cb.from_user.id
     channel_id = int(cb.data.split("_")[1])
 
     cursor.execute("SELECT url, owner_id FROM channels WHERE id = ?", (channel_id,))
     row = cursor.fetchone()
     if not row:
-        await cb.message.edit_text("❌ Канал не найден.", reply_markup=back_to_menu_kb())
-        await cb.answer()
+        await cb.answer("❌ Канал не найден.", show_alert=True)
         return
     url, owner_id = row
     username = url.split("https://t.me/")[-1]
 
     try:
         member = await bot.get_chat_member(chat_id=f"@{username}", user_id=user_id)
-        if member.status in ["member", "administrator", "creator"]:
+        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
             cursor.execute("INSERT INTO actions (user_id, channel_id, timestamp, verified) VALUES (?, ?, ?, 1)",
                            (user_id, channel_id, datetime.now()))
             cursor.execute("UPDATE users SET tokens = tokens + 1 WHERE user_id = ?", (user_id,))
             cursor.execute("UPDATE channels SET current = current + 1 WHERE id = ?", (channel_id,))
             conn.commit()
-            await cb.message.edit_text("✅ Подписка проверена. Токен начислен!", reply_markup=back_to_menu_kb())
-
+            await cb.message.edit_text("✅ Подписка проверена. Токен начислен!", reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]]
+            ))
+            # Уведомление владельцу канала
             try:
                 await bot.send_message(owner_id, f"🔔 На ваш канал {url} подписался пользователь @{cb.from_user.username or user_id}")
             except:
                 pass
         else:
-            await cb.message.edit_text("❌ Подписка не найдена. Попробуй ещё раз после подписки.", reply_markup=back_to_menu_kb())
+            await cb.answer("❌ Подписка не найдена. Подпишитесь и нажмите кнопку ещё раз.", show_alert=True)
     except:
-        await cb.message.edit_text("⚠️ Не удалось проверить подписку. Попробуй позже.", reply_markup=back_to_menu_kb())
-    await cb.answer()
+        await cb.answer("⚠️ Не удалось проверить подписку. Попробуйте позже.", show_alert=True)
 
+
+# --- Фоновая проверка отписок ---
 async def check_unsubscribes():
     while True:
         now = datetime.now()
         cutoff = now - timedelta(hours=48)
-        cursor.execute("SELECT * FROM actions WHERE verified = 1 AND timestamp < ?", (cutoff,))
+        cursor.execute("SELECT user_id, channel_id, timestamp, verified FROM actions WHERE verified = 1 AND timestamp < ?", (cutoff.isoformat(),))
         actions = cursor.fetchall()
         for user_id, channel_id, timestamp, verified in actions:
             cursor.execute("SELECT url FROM channels WHERE id = ?", (channel_id,))
@@ -329,11 +403,13 @@ async def check_unsubscribes():
             try:
                 member = await bot.get_chat_member(chat_id=f"@{username}", user_id=user_id)
                 if member.status == "left":
-                    cursor.execute("UPDATE users SET tokens = tokens - 2, ban_until = ? WHERE user_id = ?", (now + timedelta(hours=24), user_id))
+                    # Штраф токенов и бан
+                    cursor.execute("UPDATE users SET tokens = tokens - 2, ban_until = ? WHERE user_id = ?", ( (now + timedelta(hours=24)).isoformat(), user_id))
                     conn.commit()
             except:
                 continue
         await asyncio.sleep(3600)
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
