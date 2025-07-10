@@ -208,7 +208,10 @@ async def add_url(msg: Message, state: FSMContext):
     try:
         member = await bot.get_chat_member(chat_id=f"@{username}", user_id=msg.from_user.id)
     except Exception:
-        await msg.answer("❌ Бот должен быть добавлен в канал и назначен администратором!")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+        ])
+        await msg.answer("❌ Бот должен быть добавлен в канал и назначен администратором!", reply_markup=kb)
         return
 
     await state.update_data(url=url)
@@ -254,6 +257,22 @@ async def add_cost(msg: Message, state: FSMContext):
     row = cursor.fetchone()
     tokens = row[0] if row else 0
     if tokens < cost:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+        ])
+        await msg.answer("❌ У вас недостаточно токенов.", reply_markup=kb)
+        return
+
+
+    data = await state.get_data()
+    url = data.get("url")
+    target = data.get("target")
+    user_id = msg.from_user.id
+
+    cursor.execute("SELECT tokens FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    tokens = row[0] if row else 0
+    if tokens < cost:
         await msg.answer("❌ У вас недостаточно токенов.")
         return
 
@@ -281,13 +300,15 @@ async def daily_bonus(cb: CallbackQuery):
             (now.isoformat(), user_id)
         )
         if cursor.rowcount == 0:
-            # Если пользователя нет, создаём с 1 токеном
             cursor.execute(
                 "INSERT INTO users (user_id, tokens, last_bonus) VALUES (?, ?, ?)",
                 (user_id, 1, now.isoformat())
             )
         conn.commit()
-        await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+        ])
+        await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!", reply_markup=kb)
         await cb.answer()
         return
 
@@ -301,7 +322,10 @@ async def daily_bonus(cb: CallbackQuery):
         (now.isoformat(), user_id)
     )
     conn.commit()
-    await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="menu")]
+    ])
+    await cb.message.edit_text("🎁 Ты получил 1 токен за ежедневный вход!", reply_markup=kb)
     await cb.answer()
 
 
@@ -418,3 +442,43 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(check_unsubscribes())
     loop.run_until_complete(dp.start_polling(bot))
+
+from flask import Flask
+from threading import Thread
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return 'Bot is running!'
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+Thread(target=run_flask).start()
+
+# --- Логирование ---
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# --- Запуск с защитой от падений ---
+import asyncio
+import time
+
+if __name__ == '__main__':
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(check_unsubscribes())
+            loop.run_until_complete(dp.start_polling(bot))
+        except Exception as e:
+            logger.exception("Произошла критическая ошибка, перезапуск через 5 секунд...")
+            time.sleep(5)
