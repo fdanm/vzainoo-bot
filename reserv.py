@@ -1,43 +1,18 @@
 import asyncio
 import sqlite3
-import logging
-from datetime import datetime, timedelta
 from aiogram import types, Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatMemberStatus
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-
-# Flask + Threading
-from flask import Flask
-from threading import Thread
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return 'Bot is running!'
-
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-Thread(target=run_flask).start()
+from datetime import datetime, timedelta
+import logging
 
 API_TOKEN = '7692188396:AAFQcjzCqFHITJrNyPNOng9_RtfpysdWZlw'
 REQUIRED_CHANNEL = "@grifci"
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -463,13 +438,7 @@ async def check_unsubscribes():
 
 
 if __name__ == '__main__':
-    while True:
-        try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(check_unsubscribes())
-            loop.run_until_complete(dp.start_polling(bot))
-        except Exception as e:
-            logger.exception("Произошла критическая ошибка, перезапуск через 5 секунд...")
-            import time
-            time.sleep(5)
-
+    logging.basicConfig(level=logging.INFO)
+    loop = asyncio.get_event_loop()
+    loop.create_task(check_unsubscribes())
+    loop.run_until_complete(dp.start_polling(bot))
