@@ -59,9 +59,11 @@ class AddChannel(StatesGroup):
 async def is_subscribed(bot: Bot, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
-        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-    except Exception:
+        return member.status != ChatMemberStatus.LEFT
+    except Exception as e:
+        print(f"Ошибка: {e}")
         return False
+
 
 
 # --- Автоматическое добавление пользователя в базу ---
